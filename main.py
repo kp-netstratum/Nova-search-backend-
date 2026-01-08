@@ -5,13 +5,14 @@ import json
 from datetime import datetime
 from urllib.parse import urlparse
 from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from whoosh.qparser import QueryParser, MultifieldParser, OrGroup
 from whoosh.analysis import StemmingAnalyzer
 from src.indexer import get_index, index_pages
 from src.crawler import Crawler, SearchProvider
 from src.llm import generate_answer
+from src.chat import generate_chat_response
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
@@ -36,6 +37,12 @@ app.add_middleware(
 class CrawlRequest(BaseModel):
     url: str
     max_pages: int = 20
+
+class ChatRequest(BaseModel):
+    message: str
+    site: str
+    history: list = []
+
 
 def format_to_json(data, query=None):
     """Convert data to JSON format."""
@@ -226,6 +233,61 @@ async def site_search(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/chat/site")
+async def chat_with_site(request: ChatRequest):
+    """Chat endpoint that searches indexed data and streams Ollama responses."""
+    try:
+        # Search the local index for relevant context
+        ix = get_index()
+        context_items = []
+        
+        with ix.searcher() as searcher:
+            parser = MultifieldParser(
+                ["title", "content"], 
+                ix.schema, 
+                fieldboosts={"title": 2.5},
+                group=OrGroup.factory(0.9)
+            )
+            query_obj = parser.parse(request.message)
+            search_results = searcher.search(query_obj, limit=5)
+            
+            context_items = [
+                {
+                    "url": r["url"],
+                    "title": r.get("title", r["url"]),
+                    "content": r.get("content", "")
+                }
+                for r in search_results
+            ]
+        
+        # Stream the chat response
+        async def event_stream():
+            try:
+                async for chunk in generate_chat_response(
+                    message=request.message,
+                    context_items=context_items,
+                    history=request.history
+                ):
+                    # Send as Server-Sent Events format
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+                
+                # Send done signal
+                yield f"data: {json.dumps({'done': True})}\n\n"
+            except Exception as e:
+                logger.error(f"Error in chat stream: {e}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/scrape")
 async def scrape_page(request: CrawlRequest):
     crawler = Crawler()
@@ -246,7 +308,7 @@ async def start_crawl(request: CrawlRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/search/download")
-def download_search(q: str = Query(..., min_length=2), format: str = Query("json", regex="^(json|md)$")):
+def download_search(q: str = Query(..., min_length=2), format: str = Query("json", pattern="^(json|md)$")):
     """Download search results as JSON or Markdown file."""
     try:
         ix = get_index()
@@ -287,7 +349,7 @@ def download_search(q: str = Query(..., min_length=2), format: str = Query("json
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/search/live/download")
-async def download_live_search(q: str = Query(..., min_length=2), format: str = Query("json", regex="^(json|md)$")):
+async def download_live_search(q: str = Query(..., min_length=2), format: str = Query("json", pattern="^(json|md)$")):
     """Download live search results as JSON or Markdown file."""
     provider = SearchProvider()
     try:
@@ -314,7 +376,7 @@ async def download_live_search(q: str = Query(..., min_length=2), format: str = 
 async def download_site_search(
     q: str = Query(..., min_length=2), 
     url: str = Query(None), 
-    format: str = Query("json", regex="^(json|md)$"),
+    format: str = Query("json", pattern="^(json|md)$"),
     max_pages: int = Query(15, ge=1, le=100)
 ):
     """Download site search results as JSON or Markdown file."""
@@ -375,7 +437,7 @@ async def download_site_search(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/scrape/download")
-async def download_scrape(request: CrawlRequest, format: str = Query("json", regex="^(json|md)$")):
+async def download_scrape(request: CrawlRequest, format: str = Query("json", pattern="^(json|md)$")):
     """Download scraped page data as JSON or Markdown file."""
     crawler = Crawler()
     try:

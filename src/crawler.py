@@ -40,7 +40,8 @@ class Crawler:
         url = self.normalize_url(url)
         try:
             # Navigate with a generous timeout and wait for content to load
-            page.goto(url, wait_until="networkidle", timeout=20000)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000) # Wait for hydration
             return page.content()
         except Exception as e:
             logger.error(f"Playwright error on {url}: {e}")

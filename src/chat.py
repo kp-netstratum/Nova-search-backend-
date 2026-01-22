@@ -4,12 +4,15 @@ from typing import List, Dict, AsyncGenerator
 
 logger = logging.getLogger(__name__)
 
+    # model: str = "qwen3:14b"
+
+
 async def generate_chat_response(
     message: str,
     targetSite: str,
     context_items: List[Dict],
     history: List[Dict] = None,
-    model: str = "qwen3:14b"
+    model: str = "nemotron-3-nano:30b-cloud"
 ) -> AsyncGenerator[str, None]:
     """
     Generates a streaming chat response using Ollama based on the provided context.
@@ -54,19 +57,22 @@ async def generate_chat_response(
     
     
     # Add current user message with context
-    user_message = f"{context_str}" if context_str else message
-    messages.append({"role": "user", "content": user_message, "Question": message})
+    user_message = f"{context_str}\n\nUser Question: {message}" if context_str else message
+    messages.append({"role": "user", "content": user_message})
     
-    print("messages --------- \n",messages)
+    logger.info(f"Generating chat response for site: {targetSite}")
     try:
+        # Use AsyncClient for non-blocking I/O
+        client = ollama.AsyncClient()
+        
         # Stream the response
-        stream = ollama.chat(
+        stream = await client.chat(
             model=model,
             messages=messages,
             stream=True
         )
         
-        for chunk in stream:
+        async for chunk in stream:
             if 'message' in chunk and 'content' in chunk['message']:
                 yield chunk['message']['content']
                 

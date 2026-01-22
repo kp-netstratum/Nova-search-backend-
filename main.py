@@ -265,6 +265,7 @@ async def chat_with_site(request: ChatRequest):
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Recommended for SSE through Nginx
             }
         )
     except Exception as e:

@@ -6,9 +6,10 @@ logger = logging.getLogger(__name__)
 
 async def generate_chat_response(
     message: str,
+    targetSite: str,
     context_items: List[Dict],
     history: List[Dict] = None,
-    model: str = "nemotron-3-nano:30b-cloud"
+    model: str = "qwen3:14b"
 ) -> AsyncGenerator[str, None]:
     """
     Generates a streaming chat response using Ollama based on the provided context.
@@ -29,18 +30,21 @@ async def generate_chat_response(
     context_str = ""
     if context_items:
         context_str = "Here is relevant information from the crawled website:\n\n"
-        for idx, item in enumerate(context_items[:5], 1):  # Top 5 results
+        for idx, item in enumerate(context_items, 1):  
             context_str += f"[Source {idx}] {item.get('title', 'Untitled')}\n"
             context_str += f"URL: {item.get('url', '')}\n"
             # Truncate content to avoid token limits
-            content = item.get('content', '')[:800]
+            content = item.get('content', '')
             context_str += f"Content: {content}\n\n"
     
+    print("context_str --------- \n",context_str)
+
     # Build system prompt
-    system_prompt = """You are a helpful AI assistant that answers questions based on crawled website data. 
-Use the provided context to give accurate, relevant answers. If the information isn't in the context, 
-politely say so. Keep your answers clear and concise. Always cite sources when possible."""
+    system_prompt = f"""You are a helpful AI assistant that answers questions based on crawled website data from {targetSite}. 
+    Use the provided context to give accurate, relevant answers. If the information isn't in the context, politely say so. 
+    Keep your answers clear and concise. Always cite sources when possible. make the answers precise as possible."""
     
+    print("system_prompt --------- \n",system_prompt)
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
     
@@ -48,10 +52,12 @@ politely say so. Keep your answers clear and concise. Always cite sources when p
     if history:
         messages.extend(history[-10:])
     
-    # Add current user message with context
-    user_message = f"{context_str}\nUser Question: {message}" if context_str else message
-    messages.append({"role": "user", "content": user_message})
     
+    # Add current user message with context
+    user_message = f"{context_str}" if context_str else message
+    messages.append({"role": "user", "content": user_message, "Question": message})
+    
+    print("messages --------- \n",messages)
     try:
         # Stream the response
         stream = ollama.chat(

@@ -9,12 +9,6 @@ import uuid
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-from whoosh.fields import Schema, TEXT, ID
-from whoosh.index import create_in
-from whoosh.qparser import MultifieldParser, OrGroup, FuzzyTermPlugin
-from whoosh.analysis import StemmingAnalyzer
-from whoosh.filedb.filestore import RamStorage
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -198,15 +192,17 @@ class Crawler:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={'width': 1280, 'height': 800}
+                viewport={'width': 1280, 'height': 800},
+                ignore_https_errors=True
             )
             page = context.new_page()
             
-            queue = [(100, self.normalize_url(url)) for url in start_urls]
+            # Queue stores (score, url, parent_url)
+            queue = [(100, self.normalize_url(url), "") for url in start_urls]
 
             while queue and len(local_visited) < self.max_pages:
                 queue.sort(key=lambda x: x[0], reverse=True)
-                score, url = queue.pop(0)
+                score, url, parent_url = queue.pop(0)
                 
                 if url in local_visited:
                     continue
@@ -217,21 +213,31 @@ class Crawler:
                     continue
 
                 local_visited.add(url)
-                title, text = self.extract_data(html)
+                
+                # Use markdown instead of plain text
+                markdown_content = self.html_to_markdown(html, url)
+                title, _ = self.extract_data(html) # Keep title extraction for metadata if needed, though not in DB req
+                
+                # Get children URLs
+                new_links = self.extract_links(html, url, query, restrict_domain)
                 
                 local_results.append({
-                    "url": url,
-                    "title": title,
-                    "content": text
+                    "id": url, # Using URL as ID
+                    "parentUrl": parent_url,
+                    "childrenUrls": new_links,
+                    "content": markdown_content,
+                    "createdAt": int(datetime.utcnow().timestamp()), # Epoch
+                    # "title": title # Keeping title in object just in case, but indexer will ignore if not in schema.
+                                     # Actually, let's keep it in dict, indexer filters.
+                    "title": title 
                 })
 
-                new_links = self.extract_links(html, url, query, restrict_domain)
                 for link in new_links:
                     if link not in local_visited and not any(q[1] == link for q in queue):
                         link_score = self.score_link(link, query)
                         if link_score > 0 or len(local_visited) < 10:
                             if len(queue) < self.max_pages * 5:
-                                queue.append((link_score, link))
+                                queue.append((link_score, link, url))
                                 
             browser.close()
         return local_results
@@ -254,30 +260,43 @@ class Crawler:
         return await self.rank_results(results, query)
 
     async def rank_results(self, results, query):
+        """Rank results in memory using simple scoring (no DB or Whoosh)."""
         if not results: return []
-        analyzer = StemmingAnalyzer()
-        schema = Schema(
-            url=ID(stored=True), 
-            title=TEXT(stored=True, analyzer=analyzer), 
-            content=TEXT(stored=True, analyzer=analyzer)
-        )
-        storage = RamStorage()
-        ix = storage.create_index(schema)
-        writer = ix.writer()
+        
+        query_terms = query.lower().split()
+        scored_results = []
+        
         for res in results:
-            writer.add_document(url=res["url"], title=res["title"], content=res["content"])
-        writer.commit()
-
-        with ix.searcher() as searcher:
-            parser = MultifieldParser(["title", "content"], ix.schema, fieldboosts={"title": 3.0}, group=OrGroup.factory(0.9))
-            parser.plugins.append(FuzzyTermPlugin())
-            parsed_query = parser.parse(query)
-            hits = searcher.search(parsed_query, limit=10)
-            return [{
-                "url": hit["url"],
-                "title": hit["title"],
-                "snippet": hit.highlights("content", top=3) or hit["content"][:200]
-            } for hit in hits]
+            score = 0
+            title = res.get("title", "").lower()
+            content = res.get("content", "").lower()
+            
+            # Simple scoring
+            for term in query_terms:
+                score += title.count(term) * 3
+                score += content.count(term)
+            
+            # Smart snippet generation
+            snippet = res.get("content", "")[:200]
+            # Try to find a snippet containing query terms
+            for term in query_terms:
+                idx = content.find(term)
+                if idx != -1:
+                    start = max(0, idx - 60)
+                    end = min(len(content), idx + 140)
+                    snippet = "..." + res.get("content", "")[start:end] + "..."
+                    break
+            
+            scored_results.append({
+                "url": res["url"],
+                "title": res["title"],
+                "snippet": snippet,
+                "score": score
+            })
+            
+        # Sort by score descending
+        scored_results.sort(key=lambda x: x["score"], reverse=True)
+        return scored_results
 
     def _sync_scrape_detailed(self, url):
         """Synchronous detailed scrape logic to be run in a thread."""
@@ -288,7 +307,8 @@ class Crawler:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={'width': 1280, 'height': 800}
+                viewport={'width': 1280, 'height': 800},
+                ignore_https_errors=True
             )
             page = context.new_page()
             
@@ -340,10 +360,41 @@ class Crawler:
             if og_title and og_title.get("content"):
                 page_title = og_title.get("content")
             
+            # Extract images
+            images = []
+            for img in soup.find_all("img", src=True):
+                src = img["src"]
+                if src:
+                    images.append({
+                        "src": urljoin(url, src),
+                        "alt": img.get("alt", "")
+                    })
+            
+            # Extract links
+            links = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if href:
+                    links.append({
+                        "href": urljoin(url, href),
+                        "text": a.get_text(strip=True)
+                    })
+
             browser.close()
             
+            # JSON Data structure
+            json_data = {
+                "title": title,
+                "content": content,
+                "url": url,
+                "images": images,
+                "links": links,
+                "metadata": metadata_dict # Include raw metadata dict here too
+            }
+
             # Build response in the requested format
             return {
+                "json": json_data,
                 "markdown": markdown,
                 "metadata": {
                     "theme-color": theme_color,

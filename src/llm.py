@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def generate_answer(query: str, context_items: list, model: str = "nemotron-3-nano:30b-cloud") -> str:
+def generate_answer(query: str, context_items: list, model: str = "qwen2.5:32b-instruct") -> str:
     """
     Generates an answer using Ollama based on the provided context.
     

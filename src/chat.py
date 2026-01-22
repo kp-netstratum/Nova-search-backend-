@@ -12,7 +12,7 @@ async def generate_chat_response(
     targetSite: str,
     context_items: List[Dict],
     history: List[Dict] = None,
-    model: str = "qwen3:14b"
+    model: str = "qwen2.5:32b-instruct"
 ) -> AsyncGenerator[str, None]:
     """
     Generates a streaming chat response using Ollama based on the provided context.

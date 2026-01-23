@@ -1,6 +1,7 @@
 import ollama
 import logging
 from typing import List, Dict, AsyncGenerator
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ async def generate_chat_response(
     targetSite: str,
     context_items: List[Dict],
     history: List[Dict] = None,
-    model: str = "qwen2.5:32b-instruct"
+    model: str = settings.AI_MODEL
 ) -> AsyncGenerator[str, None]:
     """
     Generates a streaming chat response using Ollama based on the provided context.

@@ -185,9 +185,15 @@ class Crawler:
 
     def _sync_crawl_worker(self, start_urls, query, restrict_domain):
         """Synchronous crawling logic to be run in a thread."""
-        local_results = []
         local_visited = set()
         
+        # We will assume start_urls contains one main parent URL for the "site search" case.
+        # If multiple are passed, we might treat them as separate "parents" or just one batch.
+        # The requirement says "Start crawling from a parent URL... Store one row per parent URL".
+        # So we should iterate over start_urls and create one document for each.
+        
+        final_aggregated_results = []
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
@@ -197,50 +203,80 @@ class Crawler:
             )
             page = context.new_page()
             
-            # Queue stores (score, url, parent_url)
-            queue = [(100, self.normalize_url(url), "") for url in start_urls]
-
-            while queue and len(local_visited) < self.max_pages:
-                queue.sort(key=lambda x: x[0], reverse=True)
-                score, url, parent_url = queue.pop(0)
-                
-                if url in local_visited:
+            for start_url in start_urls:
+                parent_url = self.normalize_url(start_url)
+                if parent_url in local_visited:
                     continue
+                
+                # Per-parent data structures
+                site_visited = set()
+                site_children = [] # List of child URLs
+                site_content_parts = [] # List of markdown strings
+                
+                # Queue stores (score, url)
+                # Parent URL is the root, so it has score 100
+                queue = [(100, parent_url)]
+                
+                while queue and len(site_visited) < self.max_pages:
+                    queue.sort(key=lambda x: x[0], reverse=True)
+                    score, url = queue.pop(0)
+                    
+                    if url in site_visited:
+                        continue
 
-                logger.info(f"Crawling ({score}): {url}")
-                html = self._sync_fetch(page, url)
-                if not html:
-                    continue
+                    logger.info(f"Crawling ({score}): {url}")
+                    html = self._sync_fetch(page, url)
+                    if not html:
+                        continue
 
-                local_visited.add(url)
+                    site_visited.add(url)
+                    
+                    # Convert HTML to markdown
+                    markdown_content = self.html_to_markdown(html, url)
+                    
+                    # Append to aggregated content
+                    # Format: ## Source: <url>\n<content>\n---\n
+                    section = f"## Source: {url}\n\n{markdown_content}\n\n---\n\n"
+                    site_content_parts.append(section)
+                    
+                    # If it's a child (not the parent), add to childrenUrls
+                    if url != parent_url:
+                        site_children.append(url)
+                    
+                    # Get children URLs for traversal
+                    new_links = self.extract_links(html, url, query, restrict_domain)
+                    
+                    for link in new_links:
+                        # Only add if not visited and not already in queue
+                        if link not in site_visited and not any(q[1] == link for q in queue):
+                            link_score = self.score_link(link, query)
+                            # Basic BFS/Heuristic mix
+                            # If we haven't hit max pages, keep adding
+                            if len(site_visited) + len(queue) < self.max_pages * 2: 
+                                queue.append((link_score, link))
                 
-                # Use markdown instead of plain text
-                markdown_content = self.html_to_markdown(html, url)
-                title, _ = self.extract_data(html) # Keep title extraction for metadata if needed, though not in DB req
+                # Create the single document for this parent URL
+                merged_content = "".join(site_content_parts)
                 
-                # Get children URLs
-                new_links = self.extract_links(html, url, query, restrict_domain)
-                
-                local_results.append({
-                    "id": url, # Using URL as ID
+                aggregated_doc = {
+                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, parent_url)), # Stable UUID derived from URL
                     "parentUrl": parent_url,
-                    "childrenUrls": new_links,
-                    "content": markdown_content,
-                    "createdAt": int(datetime.utcnow().timestamp()), # Epoch
-                    # "title": title # Keeping title in object just in case, but indexer will ignore if not in schema.
-                                     # Actually, let's keep it in dict, indexer filters.
-                    "title": title 
-                })
+                    "childrenUrls": site_children,
+                    "content": merged_content,
+                    "createdAt": int(datetime.utcnow().timestamp()),
+                    # Title is optional/not in schema but useful for UI fallback if needed.
+                    # We can use the parent's title if we extracted it, but for now we didn't explicitly save it separate from content.
+                    # We'll leave it out or put a placeholder if code elsewhere needs it.
+                    "title": parent_url 
+                }
+                final_aggregated_results.append(aggregated_doc)
+                
+                # Update global visited set to avoid re-crawling if start_urls has overlaps (unlikely for site search)
+                local_visited.update(site_visited)
 
-                for link in new_links:
-                    if link not in local_visited and not any(q[1] == link for q in queue):
-                        link_score = self.score_link(link, query)
-                        if link_score > 0 or len(local_visited) < 10:
-                            if len(queue) < self.max_pages * 5:
-                                queue.append((link_score, link, url))
-                                
             browser.close()
-        return local_results
+            
+        return final_aggregated_results
 
     async def crawl(self, start_urls, query=None, restrict_domain=False):
         if isinstance(start_urls, str):

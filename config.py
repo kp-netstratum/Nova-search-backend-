@@ -29,6 +29,7 @@ class LocalConfig():
         self.DB_NAME = os.getenv("DB_NAME")
         
         self._database_url = f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        self.AI_MODEL = os.getenv("AI_MODEL", "nemotron-3-nano:30b-cloud")
 
     @property
     def DATABASE_URL(self):
@@ -47,6 +48,7 @@ class ProductionConfig():
         self.DB_NAME = os.getenv("PROD_DB_NAME")
         
         self._database_url = f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        self.AI_MODEL = os.getenv("PROD_AI_MODEL", "qwen2.5:32b-instruct")
 
     @property
     def DATABASE_URL(self):

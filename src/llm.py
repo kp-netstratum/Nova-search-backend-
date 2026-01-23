@@ -1,10 +1,11 @@
 
 import ollama
 import logging
+from config import settings
 
 logger = logging.getLogger(__name__)
 
-def generate_answer(query: str, context_items: list, model: str = "qwen2.5:32b-instruct") -> str:
+def generate_answer(query: str, context_items: list, model: str = settings.AI_MODEL) -> str:
     """
     Generates an answer using Ollama based on the provided context.
     

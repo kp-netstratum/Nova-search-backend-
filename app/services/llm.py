@@ -1,7 +1,6 @@
-
 import ollama
 import logging
-from config import settings
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +11,7 @@ def generate_answer(query: str, context_items: list, model: str = settings.AI_MO
     Args:
         query: The user's search query.
         context_items: A list of dicts containing 'title', 'content', and 'url'.
-        model: The model to use (default: llama3.2).
+        model: The model to use (default from settings).
         
     Returns:
         The generated answer as a string, or None if generation fails.
@@ -24,7 +23,7 @@ def generate_answer(query: str, context_items: list, model: str = settings.AI_MO
     context_str = ""
     for item in context_items[:5]: # Take top 5 results
         context_str += f"Source: {item.get('title', 'Untitled')} ({item.get('url', '')})\n"
-        # Truncate content to avoid token limits if necessary, though simpler models might handle it
+        # Truncate content to avoid token limits if necessary
         content = item.get('content', '')[:1000] 
         context_str += f"Content: {content}\n\n"
 

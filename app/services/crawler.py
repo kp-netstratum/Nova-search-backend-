@@ -42,12 +42,27 @@ class Crawler:
             return None
 
     def normalize_url(self, url):
-        """Ensures the URL has a scheme (defaults to https://)"""
+        """Standardize a URL: remove fragments, lowercase host, handle trailing slashes."""
         if not url: return url
+        
+        # Handle simple scheme-less URLs
+        if "://" not in url:
+            url = "https://" + url
+            
         parsed = urlparse(url)
-        if not parsed.scheme:
-            return "https://" + url
-        return url
+        scheme = parsed.scheme.lower() if parsed.scheme else "https"
+        netloc = parsed.netloc.lower()
+        path = parsed.path
+        
+        # Strip trailing slash for consistency (but keep / if it's the only character)
+        if path.endswith("/") and len(path) > 1:
+            path = path[:-1]
+        elif not path:
+            path = "/"
+            
+        # Reconstruct without query strings or fragments for identification
+        from urllib.parse import urlunparse
+        return urlunparse((scheme, netloc, path, "", "", ""))
 
     def score_link(self, url, query):
         """Simple heuristic to score links based on query relevance in URL"""
@@ -187,11 +202,6 @@ class Crawler:
         """Synchronous crawling logic to be run in a thread."""
         local_visited = set()
         
-        # We will assume start_urls contains one main parent URL for the "site search" case.
-        # If multiple are passed, we might treat them as separate "parents" or just one batch.
-        # The requirement says "Start crawling from a parent URL... Store one row per parent URL".
-        # So we should iterate over start_urls and create one document for each.
-        
         final_aggregated_results = []
 
         with sync_playwright() as p:
@@ -208,13 +218,10 @@ class Crawler:
                 if parent_url in local_visited:
                     continue
                 
-                # Per-parent data structures
                 site_visited = set()
-                site_children = [] # List of child URLs
-                site_content_parts = [] # List of markdown strings
+                site_children = [] 
+                site_content_parts = [] 
                 
-                # Queue stores (score, url)
-                # Parent URL is the root, so it has score 100
                 queue = [(100, parent_url)]
                 
                 while queue and len(site_visited) < self.max_pages:
@@ -231,47 +238,34 @@ class Crawler:
 
                     site_visited.add(url)
                     
-                    # Convert HTML to markdown
                     markdown_content = self.html_to_markdown(html, url)
                     
-                    # Append to aggregated content
-                    # Format: ## Source: <url>\n<content>\n---\n
                     section = f"## Source: {url}\n\n{markdown_content}\n\n---\n\n"
                     site_content_parts.append(section)
                     
-                    # If it's a child (not the parent), add to childrenUrls
                     if url != parent_url:
                         site_children.append(url)
                     
-                    # Get children URLs for traversal
                     new_links = self.extract_links(html, url, query, restrict_domain)
                     
                     for link in new_links:
-                        # Only add if not visited and not already in queue
                         if link not in site_visited and not any(q[1] == link for q in queue):
                             link_score = self.score_link(link, query)
-                            # Basic BFS/Heuristic mix
-                            # If we haven't hit max pages, keep adding
                             if len(site_visited) + len(queue) < self.max_pages * 2: 
                                 queue.append((link_score, link))
                 
-                # Create the single document for this parent URL
                 merged_content = "".join(site_content_parts)
                 
                 aggregated_doc = {
-                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, parent_url)), # Stable UUID derived from URL
+                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, parent_url)), 
                     "parentUrl": parent_url,
                     "childrenUrls": site_children,
                     "content": merged_content,
                     "createdAt": int(datetime.utcnow().timestamp()),
-                    # Title is optional/not in schema but useful for UI fallback if needed.
-                    # We can use the parent's title if we extracted it, but for now we didn't explicitly save it separate from content.
-                    # We'll leave it out or put a placeholder if code elsewhere needs it.
                     "title": parent_url 
                 }
                 final_aggregated_results.append(aggregated_doc)
                 
-                # Update global visited set to avoid re-crawling if start_urls has overlaps (unlikely for site search)
                 local_visited.update(site_visited)
 
             browser.close()
@@ -307,14 +301,11 @@ class Crawler:
             title = res.get("title", "").lower()
             content = res.get("content", "").lower()
             
-            # Simple scoring
             for term in query_terms:
                 score += title.count(term) * 3
                 score += content.count(term)
             
-            # Smart snippet generation
             snippet = res.get("content", "")[:200]
-            # Try to find a snippet containing query terms
             for term in query_terms:
                 idx = content.find(term)
                 if idx != -1:
@@ -324,13 +315,13 @@ class Crawler:
                     break
             
             scored_results.append({
-                "url": res["url"],
+                "url": res.get("parentUrl", res.get("url")),
                 "title": res["title"],
                 "snippet": snippet,
+                "content": res.get("content", ""),
                 "score": score
             })
             
-        # Sort by score descending
         scored_results.sort(key=lambda x: x["score"], reverse=True)
         return scored_results
 
@@ -356,47 +347,39 @@ class Crawler:
             soup = BeautifulSoup(html, "html.parser")
             title, content = self.extract_data(html)
             
-            # Convert HTML to markdown
             markdown = self.html_to_markdown(html, url)
             
-            # Extract metadata
             meta_tags = soup.find_all("meta")
             metadata_dict = {}
             for meta in meta_tags:
                 name = meta.get("name") or meta.get("property") or meta.get("http-equiv")
-                content = meta.get("content")
-                if name and content:
-                    metadata_dict[name.lower()] = content
+                content_val = meta.get("content")
+                if name and content_val:
+                    metadata_dict[name.lower()] = content_val
             
-            # Extract specific metadata fields
             theme_color = metadata_dict.get("theme-color", "#000000")
             viewport = metadata_dict.get("viewport", "width=device-width,initial-scale=1maximum-scale=1,user-scalable=yes")
             
-            # Extract description
             description = metadata_dict.get("description", "")
             if not description:
                 og_desc = soup.find("meta", attrs={"property": "og:description"})
                 if og_desc:
                     description = og_desc.get("content", "")
             
-            # Extract language
             lang = soup.find("html", lang=True)
             language = lang.get("lang", "en") if lang else "en"
             
-            # Extract favicon
             favicon = soup.find("link", rel=lambda x: x and ("icon" in x.lower() or "shortcut" in x.lower()))
             if favicon:
                 favicon = urljoin(url, favicon.get("href", ""))
             else:
                 favicon = urljoin(url, "/favicon.ico")
             
-            # Get page title
             page_title = title
             og_title = soup.find("meta", attrs={"property": "og:title"})
             if og_title and og_title.get("content"):
                 page_title = og_title.get("content")
             
-            # Extract images
             images = []
             for img in soup.find_all("img", src=True):
                 src = img["src"]
@@ -406,7 +389,6 @@ class Crawler:
                         "alt": img.get("alt", "")
                     })
             
-            # Extract links
             links = []
             for a in soup.find_all("a", href=True):
                 href = a["href"]
@@ -418,17 +400,15 @@ class Crawler:
 
             browser.close()
             
-            # JSON Data structure
             json_data = {
                 "title": title,
                 "content": content,
                 "url": url,
                 "images": images,
                 "links": links,
-                "metadata": metadata_dict # Include raw metadata dict here too
+                "metadata": metadata_dict 
             }
 
-            # Build response in the requested format
             return {
                 "json": json_data,
                 "markdown": markdown,

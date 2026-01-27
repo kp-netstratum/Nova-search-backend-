@@ -143,7 +143,8 @@ async def smartsearch_websocket(websocket: WebSocket):
         await send_json_safe({
             "type": "results",
             "results": scraped_results,
-            "ai_answer": ai_answer
+            "ai_answer": ai_answer,
+            "done": True
         })
         
     except WebSocketDisconnect:

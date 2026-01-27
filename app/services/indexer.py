@@ -42,10 +42,10 @@ async def init_db():
     try:
         # DROP tables to ensure schema update (for dev environment)
         # Using CASCADE to handle relationships
-        await conn.execute("DROP TABLE IF EXISTS chat_messages CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS chat_sessions CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS pages CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS sites CASCADE;")
+        # await conn.execute("DROP TABLE IF EXISTS chat_messages CASCADE;")
+        # await conn.execute("DROP TABLE IF EXISTS chat_sessions CASCADE;")
+        # await conn.execute("DROP TABLE IF EXISTS pages CASCADE;")
+        # await conn.execute("DROP TABLE IF EXISTS sites CASCADE;")
 
         # 1. Create sites table (The Root)
         await conn.execute("""
